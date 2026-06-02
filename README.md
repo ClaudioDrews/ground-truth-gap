@@ -4,7 +4,7 @@
 
 ---
 
-![Ground Truth Gap — pixel art illustration: on the left, a serene landscape with a "GROUND TRUTH" sign; on the right, a confused robot at a cluttered desk drowning in post-it notes of forgotten tasks. The dashed line with a question mark bridging the chasm represents the gap between having memory and using it.](assets/ground-truth-gap.jpg)
+![Ground Truth Gap — pixel art illustration: on the left, a serene landscape with a "GROUND TRUTH" sign; on the right, a confused robot at a cluttered desk drowning in post-it notes of forgotten tasks. The dashed line with a question mark bridging the chasm represents the gap between having memory and using it.](assets/ground-truth-gap.png)
 
 ---
 
