@@ -9,8 +9,8 @@
 If you've built an AI agent with memory, you've seen this pattern:
 
 - You spend hours configuring memory — vector databases, session archives, structured facts, cross-agent fabric.
-- The pipeline works. Context is injected into every prompt. You can see `[qdrant]`, `[fabric]`, `[sessions]`, `[facts]` blocks right there in the system preamble.
-- Your agent acts like they don't exist. It runs `search_files`, calls APIs, and rediscovers from scratch what was *already in its prompt*.
+- The pipeline works. Context is injected into every prompt. You can see retrieved blocks right there in the system preamble.
+- Your agent acts like they don't exist. It runs search tools, calls APIs, and rediscovers from scratch what was *already in its prompt*.
 
 This is the **Ground Truth Gap**.
 
@@ -46,19 +46,9 @@ OpenClaw supports two native memory backends: `builtin` (SQLite FTS5 + local emb
 
 This is technically sophisticated — the injection is automatic, the retrieval is handled by a subagent, and the context lands in the prompt before the model even sees the user's message.
 
-But OpenClaw's identity documents — the `SOUL.md`, `AGENTS.md`, and workspace configuration — define the agent's *character*, not what information the agent should treat as authoritative. The injected context from `active-memory` arrives as untrusted text in `prependContext`. The model can treat it as suggestion, ignore it, or rediscover the same information by calling `memory_search` itself.
+But OpenClaw's identity documents — the workspace `SOUL.md`, `AGENTS.md`, and configuration — define the agent's *character*, not what information the agent should treat as authoritative. The injected context from `active-memory` arrives as untrusted text in `prependContext`. The model can treat it as suggestion, ignore it, or rediscover the same information by calling `memory_search` itself.
 
 **The result:** The same gap. The plugin injects perfectly. The agent ignores what was injected because its identity never told it *these blocks are authoritative — do not rediscover them*.
-
-### Project Samantha
-
-Project Samantha is an OpenClaw-based persona agent built on top of the same framework. Its `AGENTS.md` took a different approach: instead of relying on the `active-memory` plugin's automatic injection, it wrote explicit instructions:
-
-> *"Memory is not an optional resource. It is the primary source of how [persona] expressed herself. Without consulting it, the response is not hers."*
-
-This is closer to a fix — it makes memory consultation a **mandatory identity rule**. But it still lacks the explicit Ground Truth hierarchy that tells the agent *how to prioritize* injected context against other sources of information.
-
-The agent checks memory before responding (because it's told to), but when the pipeline also auto-injects context, the agent doesn't know which source wins in a conflict.
 
 ---
 
@@ -70,7 +60,7 @@ The Ground Truth Gap isn't framework-specific. I've tested or studied seven dist
 
 Flat files injected into the system prompt every turn. The simplest and most common approach. When the agent's identity doesn't rank these files as authoritative, they're just more text — competing with the model's training data, user messages, and tool outputs.
 
-The agent may literally have the answer in `USER.md` and still reach for `search_files` to confirm it.
+The agent may literally have the answer in `USER.md` and still reach for search tools to confirm it.
 
 ### Holographic memory (fact_store with trust scoring)
 
@@ -128,11 +118,11 @@ I've seen this pattern repeat across every architecture I've built or studied. T
 
 ---
 
-## 4. The Solution
+## 4. The Solution — Our Implementation
 
 ### Principle: Identity must rank injected memory as Ground Truth
 
-The fix is not in the pipeline. The fix is in the agent's identity documents — the files that define who the agent is and how it should operate.
+The fix is not in the pipeline. The fix is in the agent's identity documents — the files that define who the agent is and how it should operate. We applied this fix to two distinct codebases with different identity architectures.
 
 ### Applied in Memory OS (Hermes Agent)
 
@@ -159,31 +149,91 @@ And a critical behavioral instruction:
 
 > *"When injected memory contradicts your assumptions, injected memory wins. Never treat a question as novel when the answer is already in your prompt."*
 
+Additionally, we added a **fact feedback rule** that closes the trust-scoring loop:
+
+> *"When you retrieve a fact from `fact_store` (via probe, search, or reason) and reference it in your response, you MUST call `fact_feedback` in the same turn — `action='helpful'` if the fact was accurate, `action='unhelpful'` if it was wrong. This is not optional. The trust scoring system depends on it."*
+
+The result: the agent now reads injected `[qdrant]`, `[fabric]`, `[sessions]`, `[facts]` blocks before running any discovery tools. It cites injected context directly. It does not rediscover knowledge already in the prompt.
+
 ### Applied in Project Samantha (OpenClaw)
 
-Project Samantha took a complementary approach. Instead of modifying the framework's identity documents (which get overwritten on updates), it encoded the mandate in `AGENTS.md`:
+Project Samantha is a persona agent built on OpenClaw. Instead of modifying the framework's core identity documents (which can get overwritten on updates), we encoded the mandate in its workspace `AGENTS.md`:
 
-> *"Memory is not an optional resource. It is the primary source... Without consulting it, the response is not [the persona's]."*
+> *"Memory is not an optional resource. It is the primary source of how [the persona] expressed herself. Without consulting it, the response is not hers."*
 
 This makes memory consultation a **non-optional identity rule** — not a "consider using" suggestion but a "you must do this" command. The agent checks memory before every response because its identity requires it, not because the pipeline prompts it.
 
-### How to apply the fix in vanilla Hermes Agent
+The `AGENTS.md` also defines:
 
-1. Edit `~/.hermes/SOUL.md` — add injected memory (`[qdrant]`, `[fabric]`, `[sessions]`, `[facts]`) as explicit Ground Truth levels with conflict resolution rules.
-2. Edit `~/.hermes/rulebook.md` — add a "Source of Truth" table that ranks injected memory above assumptions and training knowledge.
-3. Add the fact feedback rule: every fact retrieval must be paired with `fact_feedback` in the same turn.
-4. Restart the gateway for changes to take effect.
+- **Mandatory pre-response queries** — two memory searches (core + bio) before every response, hardcoded as curl commands to the local sidecar API.
+- **Score threshold guidance** — specific cutoffs (0.75+ for direct use, 0.50-0.74 for general shape, <0.50 for noise) that tell the agent how much to trust each retrieved memory.
+- **Ingestion protocol** — every significant interaction is extracted and stored via a dedicated API endpoint, with anti-hallucination validation (no memory is stored without a verbatim quote from the conversation).
 
-### How to apply the fix in vanilla OpenClaw
-
-1. Edit `AGENTS.md` — add a Ground Truth section that explicitly ranks memory sources: injected context > memory API results > model training knowledge.
-2. Define the conflict rule: "When injected memory contradicts your assumptions, injected memory wins. Do not rediscover what is already in your context."
-3. If using the `active-memory` plugin, ensure your identity documents reference and rank its injected context as authoritative.
-4. Configure the memory consultation as mandatory identity behavior, not optional tool use.
+The identity documents define that memory is not a tool to call — it is the primary source of persona authenticity.
 
 ---
 
-## 5. The Universal Principle
+## 5. How to Apply the Fix
+
+The same principle applies across frameworks. Here are concrete steps for vanilla setups and guidance for third-party memory systems.
+
+### In vanilla Hermes Agent
+
+1. **Edit `~/.hermes/SOUL.md`** — Add injected memory (`[qdrant]`, `[fabric]`, `[sessions]`, `[facts]`) as an explicit Ground Truth level, with the rule: *"When injected memory contradicts your assumptions, injected memory wins. Never treat a question as novel when the answer is already in your prompt."*
+
+2. **Edit `~/.hermes/rulebook.md`** — Add a "Source of Truth" table that ranks injected memory above assumptions and training knowledge, with a mandatory verification behavior: *"Before answering a question about documented knowledge or prior decisions, check the injected memory in your prompt. If the answer is already there, do not rediscover it."*
+
+3. **Add the fact feedback rule** — Every fact retrieval must be paired with `fact_feedback` in the same turn. This closes the trust-scoring loop and prevents fact stagnation.
+
+4. **Restart the gateway** — Identity document changes only take effect in new sessions after a gateway restart: `systemctl --user restart hermes-gateway`.
+
+### In vanilla OpenClaw
+
+1. **Edit workspace `AGENTS.md`** — Add a Ground Truth section that explicitly ranks memory sources: injected context > memory API results > model training knowledge. Define the conflict rule: *"When injected memory contradicts your assumptions, injected memory wins. Do not rediscover what is already in your context."*
+
+2. **Make memory consultation mandatory** — Instead of "you may use memory_search", write "you MUST check memory before every response." The difference between a suggestion and an identity requirement is everything.
+
+3. **If using `active-memory` plugin** — Ensure your identity documents reference and rank its injected context as authoritative. The `prependContext` it delivers is not "untrusted" — it is the agent's own recorded experience.
+
+4. **If using `QMD` backend** — Add a note to the identity document that QMD results are the agent's own stored knowledge, not third-party data, and should be treated as self-authored memory.
+
+5. **Configure memory as mandatory identity behavior, not optional tool use** — The agent should not need to *remember* to check memory. Its identity should require it.
+
+### How it applies to Hindsight
+
+Hindsight's auto-injection already solves the retrieval problem — memory is injected without the agent needing to call a tool. But it still needs the identity-layer fix.
+
+To apply the Ground Truth hierarchy to a Hindsight-powered agent:
+
+- Add a rule to the agent's identity document: *"The memory blocks auto-injected by Hindsight are Ground Truth for the agent's experiences, facts, and evolving beliefs. When they contradict your assumptions, the injected memory wins."*
+- Hindsight's four logical networks (world facts, agent experiences, entity summaries, evolving beliefs) benefit from explicit ranking — so the agent knows that its own *experiences* outrank its pre-training knowledge of similar topics.
+
+Without this identity change, Hindsight's auto-injected summaries are just more text in the prompt. With it, they become the agent's authoritative memory of what happened, what it learned, and what it believes.
+
+### How it applies to Honcho
+
+Honcho's dialectic reasoning derived user insights automatically. But those insights were injected as context without identity-level authority — the same gap.
+
+To fix a Honcho-integrated agent (or any external memory service):
+
+- Add to the identity document: *"Context injected by Honcho — including user representations, session summaries, and derived insights — is Ground Truth about the user. Do not rediscover or override with assumptions."*
+- This applies regardless of whether Honcho is cloud-hosted or self-hosted. The authority problem is architectural, not deployment-specific.
+
+### How it applies to any memory architecture
+
+The principle is framework- and provider-agnostic:
+
+> Whatever your memory system is — a flat file, a vector database, a reasoning engine, or a cloud API — **the pipeline can deliver, but only identity can authorize.**
+
+For any memory architecture, the fix has three parts:
+
+1. **Name the injected sources** — List them explicitly in the agent's identity document (SOUL.md, rulebook.md, AGENTS.md, or equivalent).
+2. **Rank them in the Ground Truth hierarchy** — Above training knowledge, above model assumptions. Define when they win and when they lose.
+3. **Make compliance mandatory** — Not "consider reviewing" but "you MUST use what is already in your prompt before reaching for tools."
+
+---
+
+## 6. The Universal Principle
 
 After fixing this gap across two agent frameworks, seven memory architectures, and six months of production iteration, one principle emerges clearly:
 
